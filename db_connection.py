@@ -9,29 +9,40 @@ from sqlalchemy import create_engine
 from sqlalchemy.engine import URL
 
 
-load_dotenv()
+ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+load_dotenv(ENV_PATH)
+
 _ssl_ca_path = None
 
 
 def get_db_config():
-    """Load local .env settings or deployed Streamlit Secrets."""
+    """Use Aiven Secrets in the cloud and .env locally."""
 
-    # Local computer: use the .env file.
-    if os.path.isfile(".env"):
-        load_dotenv(override=True)
+    # Streamlit Cloud configuration is explicitly selected in Secrets.
+    try:
+        deployment_mode = st.secrets.get("DEPLOYMENT_MODE", "")
+    except Exception:
+        deployment_mode = ""
 
-        return {
-            "host": os.getenv("DB_HOST", "localhost"),
-            "port": int(os.getenv("DB_PORT", "3306")),
-            "user": os.getenv("DB_USER", "root"),
-            "password": os.getenv("DB_PASSWORD", ""),
-            "database": os.getenv(
-                "DB_NAME", "cricbuzz_livestats"
-            ),
-            "ssl_ca_content": None,
-        }
+    if deployment_mode == "cloud":
+        return _get_cloud_db_config()
 
-    # Streamlit Cloud: require Aiven Secrets.
+    # Local configuration.
+    load_dotenv(ENV_PATH, override=True)
+
+    return {
+        "host": os.getenv("DB_HOST", "localhost"),
+        "port": int(os.getenv("DB_PORT", "3306")),
+        "user": os.getenv("DB_USER", "root"),
+        "password": os.getenv("DB_PASSWORD", ""),
+        "database": os.getenv("DB_NAME", "cricbuzz_livestats"),
+        "ssl_ca_content": None,
+    }
+
+
+def _get_cloud_db_config():
+    """Load Aiven connection details from Streamlit Secrets."""
+
     try:
         secrets = st.secrets["mysql"]
 
@@ -45,14 +56,14 @@ def get_db_config():
         }
     except Exception as error:
         raise RuntimeError(
-            "Could not load Aiven database settings. "
-            "Check Streamlit Cloud Settings > Secrets "
-            "and verify the [mysql] configuration."
+            "Unable to load Aiven settings. Check Streamlit Cloud "
+            "Settings > Secrets and verify the [mysql] configuration."
         ) from error
 
 
 def get_ssl_ca_path(config):
-    """Save the Aiven CA certificate to a temporary file."""
+    """Save the cloud CA certificate to a temporary file."""
+
     global _ssl_ca_path
 
     certificate = config.get("ssl_ca_content")
@@ -76,7 +87,8 @@ def get_ssl_ca_path(config):
 
 
 def get_connection():
-    """Create a MySQL connection."""
+    """Create a direct MySQL connection."""
+
     config = get_db_config()
 
     options = {
@@ -102,6 +114,7 @@ def get_connection():
 
 def get_engine():
     """Create a SQLAlchemy engine."""
+
     config = get_db_config()
 
     url = URL.create(
@@ -132,13 +145,11 @@ def get_engine():
 
 
 if __name__ == "__main__":
+    engine = None
+
     try:
         config = get_db_config()
         print("Database host:", config["host"])
-
-        connection = get_connection()
-        print("MySQL connection successful!")
-        connection.close()
 
         engine = get_engine()
 
@@ -146,15 +157,18 @@ if __name__ == "__main__":
             database = connection.exec_driver_sql(
                 "SELECT DATABASE()"
             ).scalar()
+
             matches = connection.exec_driver_sql(
                 "SELECT COUNT(*) FROM matches"
             ).scalar()
 
-            print("Database:", database)
-            print("Matches:", matches)
-
-        engine.dispose()
-        print("SQLAlchemy connection successful!")
+        print("Database:", database)
+        print("Matches:", matches)
+        print("Database connection successful!")
 
     except Exception as error:
         print("Database connection failed:", error)
+
+    finally:
+        if engine is not None:
+            engine.dispose()
