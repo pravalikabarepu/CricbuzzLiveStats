@@ -342,6 +342,24 @@ def make_excel_report(tables):
 
 table_data = {}
 table_errors = {}
+# Temporary cloud database diagnostic
+try:
+    with get_engine().connect() as connection:
+        database_name = connection.exec_driver_sql(
+            "SELECT DATABASE()"
+        ).scalar()
+
+        match_count = connection.exec_driver_sql(
+            "SELECT COUNT(*) FROM matches"
+        ).scalar()
+
+    st.success("Database connection successful!")
+    st.write("Connected database:", database_name)
+    st.write("Matches found in database:", match_count)
+
+except Exception as error:
+    st.error("Database connection failed!")
+    st.code(f"{type(error).__name__}: {error}")
 
 with st.spinner("Loading cricket data from MySQL..."):
     for table_name in TABLE_NAMES:
