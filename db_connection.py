@@ -8,14 +8,30 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.engine import URL
 
-load_dotenv()
 
+load_dotenv()
 _ssl_ca_path = None
 
 
 def get_db_config():
-    """Read Streamlit Cloud Secrets or local .env settings."""
+    """Load local .env settings or deployed Streamlit Secrets."""
 
+    # Local computer: use the .env file.
+    if os.path.isfile(".env"):
+        load_dotenv(override=True)
+
+        return {
+            "host": os.getenv("DB_HOST", "localhost"),
+            "port": int(os.getenv("DB_PORT", "3306")),
+            "user": os.getenv("DB_USER", "root"),
+            "password": os.getenv("DB_PASSWORD", ""),
+            "database": os.getenv(
+                "DB_NAME", "cricbuzz_livestats"
+            ),
+            "ssl_ca_content": None,
+        }
+
+    # Streamlit Cloud: require Aiven Secrets.
     try:
         secrets = st.secrets["mysql"]
 
@@ -27,19 +43,12 @@ def get_db_config():
             "database": secrets.get("database", "defaultdb"),
             "ssl_ca_content": secrets["ssl_ca"],
         }
-
-    except Exception:
-        # Local computer: use .env
-        return {
-            "host": os.getenv("DB_HOST", "localhost"),
-            "port": int(os.getenv("DB_PORT", "3306")),
-            "user": os.getenv("DB_USER", "root"),
-            "password": os.getenv("DB_PASSWORD", ""),
-            "database": os.getenv(
-                "DB_NAME", "cricbuzz_livestats"
-            ),
-            "ssl_ca_content": None,
-        }
+    except Exception as error:
+        raise RuntimeError(
+            "Could not load Aiven database settings. "
+            "Check Streamlit Cloud Settings > Secrets "
+            "and verify the [mysql] configuration."
+        ) from error
 
 
 def get_ssl_ca_path(config):
@@ -124,14 +133,25 @@ def get_engine():
 
 if __name__ == "__main__":
     try:
+        config = get_db_config()
+        print("Database host:", config["host"])
+
         connection = get_connection()
-        print("MySQL database connected successfully!")
+        print("MySQL connection successful!")
         connection.close()
 
         engine = get_engine()
+
         with engine.connect() as connection:
-            result = connection.exec_driver_sql("SELECT 1")
-            print("Test query result:", result.scalar())
+            database = connection.exec_driver_sql(
+                "SELECT DATABASE()"
+            ).scalar()
+            matches = connection.exec_driver_sql(
+                "SELECT COUNT(*) FROM matches"
+            ).scalar()
+
+            print("Database:", database)
+            print("Matches:", matches)
 
         engine.dispose()
         print("SQLAlchemy connection successful!")
