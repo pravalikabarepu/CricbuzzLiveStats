@@ -95,6 +95,31 @@ def numeric(s):
     return pd.to_numeric(s, errors="coerce")
 
 
+def add_player_names(df, players_df):
+    """Add a player_name column by joining on player_id, if it is missing."""
+    if df.empty or players_df.empty:
+        return df
+    if get_column(df, ["player_name", "batsman_name", "bowler_name", "name", "player"]):
+        return df
+
+    df_id = get_column(df, ["player_id"])
+    pl_id = get_column(players_df, ["player_id", "id"])
+    pl_name = get_column(players_df, ["player_name", "name", "fullname"])
+    if not (df_id and pl_id and pl_name):
+        return df
+
+    lookup = players_df[[pl_id, pl_name]].drop_duplicates(subset=pl_id).copy()
+    lookup["_key"] = lookup[pl_id].astype(str)
+    lookup = lookup[["_key", pl_name]].rename(columns={pl_name: "player_name"})
+
+    out = df.copy()
+    out["_key"] = out[df_id].astype(str)
+    out = out.merge(lookup, on="_key", how="left").drop(columns="_key")
+    # If a player id has no name in the players table, show the id instead.
+    out["player_name"] = out["player_name"].fillna("Player " + out[df_id].astype(str))
+    return out
+
+
 def show_df(df):
     if df is None or df.empty:
         st.info("No records available.")
@@ -183,6 +208,11 @@ batting = table_data["batting_performance"]
 bowling = table_data["bowling_performance"]
 partnerships = table_data["partnerships"]
 
+# Batting/bowling tables usually store only player_id, so add the names
+# from the players table. This is what makes the player charts appear.
+batting = add_player_names(batting, players)
+bowling = add_player_names(bowling, players)
+
 # =========================================================
 # 5. SIDEBAR (admin-only refresh)
 # =========================================================
@@ -192,7 +222,10 @@ with st.sidebar:
     st.caption("Cricket Analytics Dashboard")
     st.divider()
 
-    admin_secret = st.secrets.get("ADMIN_PASSWORD", "")
+    try:
+        admin_secret = st.secrets.get("ADMIN_PASSWORD", "")
+    except Exception:
+        admin_secret = ""
 
     if admin_secret:
         if not is_admin():
@@ -263,6 +296,12 @@ with tabs[0]:
         for col, (label, value) in zip(st.columns(4), overview[start:start + 4]):
             col.metric(label, f"{value:,}")
 
+    counts = pd.DataFrame({
+        "Table": TABLE_NAMES,
+        "Rows": [len(table_data[n]) for n in TABLE_NAMES],
+    })
+    bar_chart(counts, "Table", "Rows", "Records per Table", 400)
+
 # =========================================================
 # 8. MATCHES
 # =========================================================
@@ -294,6 +333,12 @@ with tabs[1]:
                 f = f[mask]
 
         st.caption(f"Showing {len(f):,} matches")
+
+        if fmt_col and not f.empty:
+            by_format = f[fmt_col].astype(str).value_counts().reset_index()
+            by_format.columns = [fmt_col, "Matches"]
+            bar_chart(by_format, fmt_col, "Matches", "Matches by Format", 400)
+
         show_df(f)
         csv_button(f, "cricbuzz_match_details.csv", "⬇️ Download Match Details")
 
@@ -333,13 +378,16 @@ with tabs[3]:
     if batting.empty:
         st.info("No batting performance data is available.")
     else:
-        p_col = get_column(batting, ["player_name", "batsman_name", "name", "player"])
+        p_col = (
+            get_column(batting, ["player_name", "batsman_name", "name", "player"])
+            or get_column(batting, ["player_id"])
+        )
         runs_col = get_column(batting, ["runs", "runs_scored", "batsman_runs", "total_runs"])
         balls_col = get_column(batting, ["balls", "balls_faced", "ballsfaced"])
         fours_col = get_column(batting, ["fours", "four", "fours_count"])
         sixes_col = get_column(batting, ["sixes", "six", "sixes_count"])
 
-        f = select_filter(batting.copy(), p_col, "Batting Player", "All Players")
+        f = select_filter(batting.copy(), p_col, "Batting Player", "All Players").copy()
 
         if runs_col:
             f[runs_col] = numeric(f[runs_col])
@@ -348,6 +396,7 @@ with tabs[3]:
                     f.dropna(subset=[runs_col]).groupby(p_col, as_index=False)[runs_col]
                     .sum().sort_values(runs_col, ascending=False).head(10)
                 )
+                top[p_col] = top[p_col].astype(str)
                 bar_chart(top, p_col, runs_col, "Top 10 Run Scorers")
 
             cols = st.columns(4)
@@ -371,11 +420,14 @@ with tabs[4]:
     if bowling.empty:
         st.info("No bowling performance data is available.")
     else:
-        b_col = get_column(bowling, ["player_name", "bowler_name", "name", "player"])
+        b_col = (
+            get_column(bowling, ["player_name", "bowler_name", "name", "player"])
+            or get_column(bowling, ["player_id"])
+        )
         w_col = get_column(bowling, ["wickets", "wickets_taken", "total_wickets"])
         rc_col = get_column(bowling, ["runs_conceded", "runs", "conceded"])
 
-        f = select_filter(bowling.copy(), b_col, "Bowling Player", "All Players")
+        f = select_filter(bowling.copy(), b_col, "Bowling Player", "All Players").copy()
 
         if w_col:
             f[w_col] = numeric(f[w_col])
@@ -384,6 +436,7 @@ with tabs[4]:
                     f.dropna(subset=[w_col]).groupby(b_col, as_index=False)[w_col]
                     .sum().sort_values(w_col, ascending=False).head(10)
                 )
+                top[b_col] = top[b_col].astype(str)
                 bar_chart(top, b_col, w_col, "Top 10 Wicket Takers")
 
         m1, m2 = st.columns(2)
@@ -418,9 +471,15 @@ with tabs[5]:
             t_id = get_column(teams, ["team_id", "id"])
             t_name = get_column(teams, ["team_name", "name"])
             if t_id and t_name:
-                lookup = teams[[t_id, t_name]].drop_duplicates()
+                lookup = (
+                    teams[[t_id, t_name]]
+                    .drop_duplicates(subset=t_id)
+                    .rename(columns={t_name: "Team"})
+                )
                 tr = tr.merge(lookup, left_on=team_id_col, right_on=t_id, how="left")
-                label_col = t_name
+                # Show the id when a team has no name in the teams table.
+                tr["Team"] = tr["Team"].fillna("Team " + tr[team_id_col].astype(str))
+                label_col = "Team"
 
         agg = {runs_col: "sum"}
         if wk_col:
@@ -428,6 +487,7 @@ with tabs[5]:
         summary = tr.groupby(label_col, as_index=False).agg(agg).sort_values(
             runs_col, ascending=False
         )
+        summary[label_col] = summary[label_col].astype(str)
         bar_chart(summary, label_col, runs_col, "Total Runs by Team")
         show_df(summary)
         csv_button(summary, "cricbuzz_team_run_analytics.csv", "⬇️ Download Team Analytics")
