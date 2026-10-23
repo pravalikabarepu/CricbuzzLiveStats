@@ -1,8 +1,9 @@
 
-streamlit
+streamlit>=1.50
 pandas
 plotly
 SQLAlchemy
+openpyxl
 mysql-connector-python
 python-dotenv
 requests
